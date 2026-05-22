@@ -21,9 +21,14 @@ pub struct Args {
     #[arg(long)]
     pub no_animate: bool,
 
-    /// Play the animation once instead of looping forever.
+    /// Snapshot mode: print info + first frame and exit (like fastfetch).
+    /// Without this flag, livefetch stays open and refreshes live metrics.
     #[arg(long)]
     pub once: bool,
+
+    /// Refresh interval for live metrics, in milliseconds (default 500).
+    #[arg(long, value_name = "MS")]
+    pub refresh: Option<u64>,
 
     /// Path to a config file (JSON).
     #[arg(long)]

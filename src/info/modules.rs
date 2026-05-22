@@ -1,6 +1,11 @@
-use sysinfo::{Disks, System};
+use std::collections::VecDeque;
+use std::time::Instant;
+
+use sysinfo::{Disks, Networks, System};
 
 use super::platform;
+
+const HIST_LEN: usize = 20;
 
 #[derive(Clone, Debug)]
 pub enum LineKind {
@@ -40,9 +45,21 @@ impl InfoLine {
 }
 
 /// Per-collection cache so we don't refresh sysinfo for every module.
+///
+/// Holds the live state for the dashboard: ring buffers of recent samples so
+/// modules can render sparklines, plus the previous-tick timestamps needed to
+/// turn cumulative counters (network bytes) into per-second rates.
 pub struct Ctx {
     pub sys: System,
     pub disks: Disks,
+    pub networks: Networks,
+    pub cpu_hist: VecDeque<f32>,   // 0..=100
+    pub mem_hist: VecDeque<f32>,   // 0..=100
+    pub rx_hist: VecDeque<f64>,    // bytes/sec
+    pub tx_hist: VecDeque<f64>,    // bytes/sec
+    pub last_rx_bps: f64,
+    pub last_tx_bps: f64,
+    last_tick: Option<Instant>,
 }
 
 impl Ctx {
@@ -53,7 +70,117 @@ impl Ctx {
         Ctx {
             sys,
             disks: Disks::new_with_refreshed_list(),
+            networks: Networks::new_with_refreshed_list(),
+            cpu_hist: VecDeque::with_capacity(HIST_LEN),
+            mem_hist: VecDeque::with_capacity(HIST_LEN),
+            rx_hist: VecDeque::with_capacity(HIST_LEN),
+            tx_hist: VecDeque::with_capacity(HIST_LEN),
+            last_rx_bps: 0.0,
+            last_tx_bps: 0.0,
+            last_tick: None,
         }
+    }
+
+    /// Refresh sysinfo and push a fresh sample into each history ring.
+    /// Called once per live-refresh tick from the layout loop.
+    pub fn tick(&mut self) {
+        self.sys.refresh_cpu_usage();
+        self.sys.refresh_memory();
+        self.networks.refresh();
+
+        let cpus = self.sys.cpus();
+        let cpu_pct = if cpus.is_empty() {
+            0.0
+        } else {
+            cpus.iter().map(|c| c.cpu_usage()).sum::<f32>() / cpus.len() as f32
+        };
+        push_capped(&mut self.cpu_hist, cpu_pct);
+
+        let total = self.sys.total_memory() as f32;
+        let used = self.sys.used_memory() as f32;
+        let mem_pct = if total > 0.0 { used / total * 100.0 } else { 0.0 };
+        push_capped(&mut self.mem_hist, mem_pct);
+
+        let (rx_bytes, tx_bytes) = self
+            .networks
+            .iter()
+            .fold((0u64, 0u64), |(r, t), (_, d)| (r + d.received(), t + d.transmitted()));
+        let now = Instant::now();
+        let elapsed = self
+            .last_tick
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .unwrap_or(0.0);
+        self.last_tick = Some(now);
+        let (rx_bps, tx_bps) = if elapsed > 0.0 {
+            (rx_bytes as f64 / elapsed, tx_bytes as f64 / elapsed)
+        } else {
+            (0.0, 0.0)
+        };
+        self.last_rx_bps = rx_bps;
+        self.last_tx_bps = tx_bps;
+        push_capped(&mut self.rx_hist, rx_bps);
+        push_capped(&mut self.tx_hist, tx_bps);
+    }
+}
+
+fn push_capped<T>(buf: &mut VecDeque<T>, v: T) {
+    if buf.len() == HIST_LEN {
+        buf.pop_front();
+    }
+    buf.push_back(v);
+}
+
+fn sparkline<I, F>(values: I, to_f32: F, max: Option<f32>) -> String
+where
+    I: IntoIterator<Item = f32> + Clone,
+    F: Fn(f32) -> f32,
+{
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let vals: Vec<f32> = values.into_iter().map(&to_f32).collect();
+    if vals.is_empty() {
+        return String::new();
+    }
+    let cap = max.unwrap_or_else(|| vals.iter().cloned().fold(0.0_f32, f32::max));
+    if cap <= 0.0 {
+        return BARS[0].to_string().repeat(vals.len());
+    }
+    vals.iter()
+        .map(|v| {
+            let n = (v / cap * 7.0).round().clamp(0.0, 7.0) as usize;
+            BARS[n]
+        })
+        .collect()
+}
+
+fn spark_f32(values: &VecDeque<f32>, max: Option<f32>) -> String {
+    sparkline(values.iter().copied(), |v| v, max)
+}
+
+fn spark_f64(values: &VecDeque<f64>) -> String {
+    sparkline(values.iter().map(|v| *v as f32), |v| v, None)
+}
+
+fn bar(pct: f32, width: usize) -> String {
+    let filled = ((pct / 100.0 * width as f32).round() as usize).min(width);
+    let mut s = String::with_capacity(width);
+    for i in 0..width {
+        s.push(if i < filled { '█' } else { '░' });
+    }
+    s
+}
+
+fn fmt_rate(bps: f64) -> String {
+    const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s"];
+    let mut v = bps;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 || v >= 100.0 {
+        format!("{:>4.0} {}", v, UNITS[i])
+    } else {
+        format!("{:>4.1} {}", v, UNITS[i])
     }
 }
 
@@ -94,33 +221,17 @@ pub fn render(name: &str, ctx: &mut Ctx) -> Option<Vec<InfoLine>> {
             Some(r) => vec![InfoLine::field("Resolution", r)],
             None => vec![],
         },
-        "cpu" => vec![InfoLine::field("CPU", cpu_line(&ctx.sys))],
+        "cpu" => vec![InfoLine::field("CPU", cpu_line(ctx))],
         "gpu" => {
             let gpus = platform::gpus();
             gpus.into_iter().map(|g| InfoLine::field("GPU", g)).collect()
         }
-        "memory" => vec![InfoLine::field(
-            "Memory",
-            format!(
-                "{} / {}",
-                fmt_bytes(ctx.sys.used_memory()),
-                fmt_bytes(ctx.sys.total_memory())
-            ),
-        )],
-        "swap" => {
-            if ctx.sys.total_swap() == 0 {
-                vec![]
-            } else {
-                vec![InfoLine::field(
-                    "Swap",
-                    format!(
-                        "{} / {}",
-                        fmt_bytes(ctx.sys.used_swap()),
-                        fmt_bytes(ctx.sys.total_swap())
-                    ),
-                )]
-            }
-        }
+        "memory" => vec![InfoLine::field("Memory", memory_line(ctx))],
+        "swap" => match swap_line(ctx) {
+            Some(s) => vec![InfoLine::field("Swap", s)],
+            None => vec![],
+        },
+        "network" => network_lines(ctx),
         "disk" => disk_lines(&ctx.disks),
         "battery" => match platform::battery() {
             Some(b) => vec![InfoLine::field("Battery", b)],
@@ -174,16 +285,67 @@ fn title_width() -> usize {
     n.max(8)
 }
 
-fn cpu_line(sys: &System) -> String {
-    let cpu = sys.cpus().first();
+fn cpu_line(ctx: &Ctx) -> String {
+    let cpu = ctx.sys.cpus().first();
     let brand = cpu.map(|c| c.brand().to_string()).unwrap_or_else(|| "Unknown".into());
-    let count = sys.cpus().len();
+    let count = ctx.sys.cpus().len();
     let freq = cpu.map(|c| c.frequency()).unwrap_or(0);
-    if freq > 0 {
+    let base = if freq > 0 {
         format!("{} ({} cores @ {:.2} GHz)", brand.trim(), count, freq as f32 / 1000.0)
     } else {
         format!("{} ({} cores)", brand.trim(), count)
+    };
+    match ctx.cpu_hist.back() {
+        Some(&pct) => format!(
+            "{} · {:>4.1}% {}",
+            base,
+            pct,
+            spark_f32(&ctx.cpu_hist, Some(100.0))
+        ),
+        None => base,
     }
+}
+
+fn memory_line(ctx: &Ctx) -> String {
+    let used = ctx.sys.used_memory();
+    let total = ctx.sys.total_memory();
+    let pct = if total > 0 {
+        (used as f64 / total as f64 * 100.0) as f32
+    } else {
+        0.0
+    };
+    format!(
+        "{} / {} ({:>2.0}%) {}",
+        fmt_bytes(used),
+        fmt_bytes(total),
+        pct,
+        bar(pct, 10)
+    )
+}
+
+fn swap_line(ctx: &Ctx) -> Option<String> {
+    let total = ctx.sys.total_swap();
+    if total == 0 {
+        return None;
+    }
+    let used = ctx.sys.used_swap();
+    let pct = (used as f64 / total as f64 * 100.0) as f32;
+    Some(format!(
+        "{} / {} ({:>2.0}%) {}",
+        fmt_bytes(used),
+        fmt_bytes(total),
+        pct,
+        bar(pct, 10)
+    ))
+}
+
+fn network_lines(ctx: &Ctx) -> Vec<InfoLine> {
+    let down = format!("{} {}", fmt_rate(ctx.last_rx_bps), spark_f64(&ctx.rx_hist));
+    let up = format!("{} {}", fmt_rate(ctx.last_tx_bps), spark_f64(&ctx.tx_hist));
+    vec![
+        InfoLine::field("Net ↓", down),
+        InfoLine::field("Net ↑", up),
+    ]
 }
 
 fn disk_lines(disks: &Disks) -> Vec<InfoLine> {

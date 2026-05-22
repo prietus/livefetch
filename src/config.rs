@@ -13,7 +13,8 @@ pub struct Config {
     pub protocol: ProtocolPref,
     pub image_cols: u16,
     pub animate: bool,
-    pub loop_forever: bool,
+    pub live: bool,
+    pub refresh_ms: u64,
     pub modules: Vec<String>,
     pub chroma: ChromaKey,
     pub chroma_tolerance: u8,
@@ -46,7 +47,8 @@ struct FileConfig {
     protocol: Option<String>,
     image_cols: Option<u16>,
     animate: Option<bool>,
-    loop_forever: Option<bool>,
+    live: Option<bool>,
+    refresh_ms: Option<u64>,
     modules: Option<Vec<String>>,
     chroma: Option<String>,
     chroma_tolerance: Option<u8>,
@@ -83,7 +85,8 @@ pub fn load(path: Option<&Path>) -> Result<Config> {
         protocol,
         image_cols: file_cfg.image_cols.unwrap_or(34),
         animate: file_cfg.animate.unwrap_or(true),
-        loop_forever: file_cfg.loop_forever.unwrap_or(true),
+        live: file_cfg.live.unwrap_or(true),
+        refresh_ms: file_cfg.refresh_ms.unwrap_or(500).max(50),
         modules: file_cfg.modules.unwrap_or_else(default_modules),
         chroma,
         chroma_tolerance: file_cfg.chroma_tolerance.unwrap_or(24),
@@ -105,7 +108,10 @@ impl Config {
             self.animate = false;
         }
         if args.once {
-            self.loop_forever = false;
+            self.live = false;
+        }
+        if let Some(ms) = args.refresh {
+            self.refresh_ms = ms.max(50);
         }
         if let Some(m) = &args.modules {
             self.modules = m.clone();
@@ -140,8 +146,8 @@ fn default_modules() -> Vec<String> {
     [
         "title", "separator", "os", "host", "kernel", "init", "uptime", "loadavg", "packages",
         "shell", "terminal", "session", "de", "wm", "resolution", "cpu", "cputemp", "gpu",
-        "gpudriver", "memory", "swap", "disk", "localip", "audio", "theme", "battery", "locale",
-        "break", "colors",
+        "gpudriver", "memory", "swap", "network", "disk", "localip", "audio", "theme", "battery",
+        "locale", "break", "colors",
     ]
     .iter()
     .map(|s| s.to_string())

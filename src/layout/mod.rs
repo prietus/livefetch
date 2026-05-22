@@ -7,17 +7,19 @@ use anyhow::Result;
 
 use crate::config::Config;
 use crate::image::ImageAsset;
-use crate::info::{InfoLine, LineKind};
+use crate::info::{self, InfoLine, LineKind};
 use crate::terminal::{self, cell_pixel_size, renderers, Protocol};
 
-pub fn run(
-    cfg: Config,
-    info: Vec<InfoLine>,
-    image: Option<ImageAsset>,
-    proto: Protocol,
-) -> Result<()> {
+pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()> {
     let cell = cell_pixel_size();
-    let info_lines = format_info(&info);
+
+    // Cache the static modules and take a first sysinfo sample so the initial
+    // paint already shows real values (CPU% will be zero on the very first
+    // tick — that's a sysinfo property — but the live loop fills it in).
+    let mut builder = info::Builder::new(cfg.clone());
+    builder.tick();
+    let info_lines = format_info(&builder.render());
+    let info_rows = info_lines.len() as u16;
 
     let image_cols = if image.is_some() && proto != Protocol::None {
         cfg.image_cols.min(cell.cols.saturating_sub(20))
@@ -27,7 +29,6 @@ pub fn run(
     let gutter: u16 = if image_cols > 0 { 2 } else { 0 };
     let info_col = image_cols + gutter;
 
-    let info_rows = info_lines.len() as u16;
     let image_rows = if let Some(asset) = &image {
         compute_image_rows(asset, image_cols, &cell, info_rows)
     } else {
@@ -37,79 +38,90 @@ pub fn run(
 
     let mut stdout = io::stdout().lock();
 
-    // Reserve vertical space without querying cursor position:
-    //   1. Hide cursor.
-    //   2. Print N blank lines (scrolls the viewport if we were near the bottom).
-    //   3. Move cursor back up N lines — now we are at the top-left of our region.
-    //   4. Save cursor (DECSC). All subsequent paints restore + move relative.
+    // Reserve vertical space and save the top-left anchor (DECSC). Every
+    // subsequent paint restores to it (DECRC) and moves relative.
     write!(stdout, "\x1b[?25l")?;
     for _ in 0..total_rows {
         writeln!(stdout)?;
     }
     write!(stdout, "\x1b[{}A", total_rows)?;
-    write!(stdout, "\x1b7")?; // DECSC
+    write!(stdout, "\x1b7")?;
     stdout.flush()?;
 
-    paint_info(&mut stdout, &info_lines, info_col)?;
+    paint_info(&mut stdout, &info_lines, info_col, info_rows)?;
     stdout.flush()?;
+
+    let mut renderer =
+        image.map(|asset| renderers::build(proto, asset, (image_cols, image_rows), cell));
 
     let stop = Arc::new(AtomicBool::new(false));
     install_ctrl_c(stop.clone());
 
-    if let Some(asset) = image {
+    let mut next_frame_at: Option<Instant> = None;
+    let mut frame_idx = 0usize;
+    if let Some(r) = renderer.as_mut() {
         if image_cols > 0 {
-            let mut renderer =
-                renderers::build(proto, asset, (image_cols, image_rows), cell);
-
-            if !cfg.animate || renderer.frame_count() <= 1 {
-                renderer.render_frame(&mut stdout, 0)?;
-                stdout.flush()?;
-            } else {
-                run_loop(
-                    &mut *renderer,
-                    &mut stdout,
-                    cfg.loop_forever,
-                    stop.clone(),
-                )?;
+            let delay = r.render_frame(&mut stdout, 0)?;
+            stdout.flush()?;
+            if cfg.live && cfg.animate && r.frame_count() > 1 {
+                next_frame_at = Some(Instant::now() + delay);
             }
-
-            renderer.finish(&mut stdout)?;
         }
     }
 
-    // Drop cursor below the block so the next shell prompt lands cleanly.
-    write!(stdout, "\x1b8")?; // DECRC to anchor
-    write!(stdout, "\x1b[{}B", total_rows)?; // move down past the block
-    write!(stdout, "\r")?; // column 1
-    write!(stdout, "\x1b[?25h")?; // show cursor
-    stdout.flush()?;
-    Ok(())
-}
+    if cfg.live {
+        let refresh = Duration::from_millis(cfg.refresh_ms);
+        let mut next_info_at = Instant::now() + refresh;
 
-fn run_loop<W: Write>(
-    renderer: &mut dyn renderers::Renderer,
-    out: &mut W,
-    loop_forever: bool,
-    stop: Arc<AtomicBool>,
-) -> Result<()> {
-    let total = renderer.frame_count();
-    let mut idx = 0;
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        // All renderers position relative to the saved cursor (DECSC) anchor.
-        let delay = renderer.render_frame(out, idx)?;
-        out.flush()?;
-        sleep_interruptible(delay, &stop);
-        idx += 1;
-        if idx >= total {
-            if !loop_forever {
+        loop {
+            if stop.load(Ordering::Relaxed) {
                 break;
             }
-            idx = 0;
+            let now = Instant::now();
+
+            if let Some(deadline) = next_frame_at {
+                if now >= deadline {
+                    if let Some(r) = renderer.as_mut() {
+                        let total = r.frame_count();
+                        frame_idx = (frame_idx + 1) % total.max(1);
+                        let delay = r.render_frame(&mut stdout, frame_idx)?;
+                        next_frame_at = Some(Instant::now() + delay);
+                    }
+                }
+            }
+
+            if now >= next_info_at {
+                builder.tick();
+                let lines = format_info(&builder.render());
+                paint_info(&mut stdout, &lines, info_col, info_rows)?;
+                next_info_at = Instant::now() + refresh;
+            }
+
+            stdout.flush()?;
+
+            // Wake at the earlier of the two deadlines, capped at a 50ms
+            // heartbeat so the stop flag is checked often.
+            let now = Instant::now();
+            let next = match next_frame_at {
+                Some(f) => f.min(next_info_at),
+                None => next_info_at,
+            };
+            let wait = next
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(50));
+            sleep_interruptible(wait, &stop);
         }
     }
+
+    if let Some(r) = renderer.as_mut() {
+        r.finish(&mut stdout)?;
+    }
+
+    write!(stdout, "\x1b8")?;
+    write!(stdout, "\x1b[{}B", total_rows)?;
+    write!(stdout, "\r")?;
+    write!(stdout, "\x1b[?25h")?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -166,9 +178,20 @@ fn compute_image_rows(
     rows.max(info_rows).max(1)
 }
 
-fn paint_info<W: Write>(out: &mut W, lines: &[String], col: u16) -> Result<()> {
-    for (i, line) in lines.iter().enumerate() {
-        // Restore to anchor, move down i rows + right `col` columns.
+/// Paint `lines` starting at the saved anchor, indented `col` columns.
+///
+/// Always paints exactly `reserved` rows: shorter content is padded with blank
+/// (erased) rows, longer content is truncated. `\x1b[K` erases from the cursor
+/// to the end of the line, so stale text from a previous (longer) paint never
+/// leaks into the current frame. The image sits to the left of `col`, so
+/// erase-to-end-of-line never touches it.
+fn paint_info<W: Write>(
+    out: &mut W,
+    lines: &[String],
+    col: u16,
+    reserved: u16,
+) -> Result<()> {
+    for i in 0..reserved {
         write!(out, "\x1b8")?;
         if i > 0 {
             write!(out, "\x1b[{}B", i)?;
@@ -176,9 +199,11 @@ fn paint_info<W: Write>(out: &mut W, lines: &[String], col: u16) -> Result<()> {
         if col > 0 {
             write!(out, "\x1b[{}C", col)?;
         }
-        out.write_all(line.as_bytes())?;
+        write!(out, "\x1b[K")?;
+        if let Some(line) = lines.get(i as usize) {
+            out.write_all(line.as_bytes())?;
+        }
     }
-    // Leave cursor back at anchor for the next paint.
     write!(out, "\x1b8")?;
     Ok(())
 }
