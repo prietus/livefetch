@@ -1,0 +1,36 @@
+[package]
+name = "livefetch"
+version = "0.1.0"
+edition = "2021"
+description = "Animated fastfetch-style system info with gif/webp support"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+sysinfo = "0.32"
+os_info = "3"
+whoami = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+gif = "0.13"
+webp-animation = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_SystemInformation",
+    "Win32_System_Registry",
+    "Win32_Foundation",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
