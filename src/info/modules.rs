@@ -1,11 +1,49 @@
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sysinfo::{Disks, Networks, System};
 
 use super::platform;
 
 const HIST_LEN: usize = 20;
+const BATTERY_TTL: Duration = Duration::from_secs(10);
+
+/// Catalog of every known module name and a one-line description, in the same
+/// order they appear in the default layout. Keep this in sync with the match
+/// arms in [`render`] — `--list-modules` reads from here.
+pub const ALL_MODULES: &[(&str, &str)] = &[
+    ("title", "user@hostname header"),
+    ("separator", "divider line under the title"),
+    ("os", "OS name + version + arch"),
+    ("host", "hardware model (DMI / sysctl hw.model)"),
+    ("kernel", "kernel name and version"),
+    ("init", "init system (systemd, launchd, openrc…)"),
+    ("uptime", "time since boot"),
+    ("loadavg", "load averages 1/5/15"),
+    ("packages", "installed package count per package manager"),
+    ("shell", "current shell ($SHELL)"),
+    ("terminal", "terminal program ($TERM_PROGRAM / $TERM)"),
+    ("session", "session type (Wayland/X11/TTY) and compositor"),
+    ("de", "desktop environment"),
+    ("wm", "window manager"),
+    ("resolution", "active display resolution per connector"),
+    ("cpu", "CPU brand, cores, frequency, live usage % + sparkline"),
+    ("cputemp", "CPU temperature from hwmon (Linux)"),
+    ("gpu", "GPU model with kernel driver in brackets"),
+    ("gpudriver", "GPU kernel driver (separate line)"),
+    ("memory", "used/total RAM, percentage, bar"),
+    ("swap", "used/total swap (hidden when no swap)"),
+    ("network", "rx/tx rates with sparklines (excludes loopback)"),
+    ("disk", "per-mount used/total/percent"),
+    ("localip", "primary IPv4 address + interface"),
+    ("localip6", "primary IPv6 address + interface"),
+    ("audio", "audio server (PipeWire/PulseAudio/CoreAudio)"),
+    ("theme", "GTK theme + icons (Linux) / Light/Dark (macOS)"),
+    ("battery", "charge % and AC/charging state"),
+    ("locale", "$LC_ALL / $LANG"),
+    ("break", "blank line spacer"),
+    ("colors", "16-color palette swatches"),
+];
 
 #[derive(Clone, Debug)]
 pub enum LineKind {
@@ -60,6 +98,11 @@ pub struct Ctx {
     pub last_rx_bps: f64,
     pub last_tx_bps: f64,
     last_tick: Option<Instant>,
+    /// Cached `platform::battery()` result with the timestamp it was sampled.
+    /// `pmset -g batt` on macOS forks a subprocess that takes tens of ms;
+    /// refreshing it every tick (default 500ms) is wasted work for a value
+    /// that changes in minutes. TTL = [`BATTERY_TTL`].
+    battery_cache: Option<(Option<String>, Instant)>,
 }
 
 impl Ctx {
@@ -78,7 +121,20 @@ impl Ctx {
             last_rx_bps: 0.0,
             last_tx_bps: 0.0,
             last_tick: None,
+            battery_cache: None,
         }
+    }
+
+    fn battery(&mut self) -> Option<String> {
+        let now = Instant::now();
+        let fresh = self
+            .battery_cache
+            .as_ref()
+            .is_some_and(|(_, t)| now.duration_since(*t) < BATTERY_TTL);
+        if !fresh {
+            self.battery_cache = Some((platform::battery(), now));
+        }
+        self.battery_cache.as_ref().and_then(|(v, _)| v.clone())
     }
 
     /// Refresh sysinfo and push a fresh sample into each history ring.
@@ -101,9 +157,13 @@ impl Ctx {
         let mem_pct = if total > 0.0 { used / total * 100.0 } else { 0.0 };
         push_capped(&mut self.mem_hist, mem_pct);
 
+        // Skip loopback so something like `curl localhost` doesn't dominate
+        // the visible rate. Linux uses `lo`, macOS uses `lo0`, BSDs sometimes
+        // have multiple (`lo1`…), so match the prefix.
         let (rx_bytes, tx_bytes) = self
             .networks
             .iter()
+            .filter(|(name, _)| !is_loopback(name))
             .fold((0u64, 0u64), |(r, t), (_, d)| (r + d.received(), t + d.transmitted()));
         let now = Instant::now();
         let elapsed = self
@@ -121,6 +181,15 @@ impl Ctx {
         push_capped(&mut self.rx_hist, rx_bps);
         push_capped(&mut self.tx_hist, tx_bps);
     }
+}
+
+fn is_loopback(name: &str) -> bool {
+    // Match `lo` or `lo<digits>` — covers Linux (`lo`), macOS/BSD (`lo0`,
+    // `lo1`…) without false-matching real interfaces like `loopnet0`.
+    name == "lo"
+        || name
+            .strip_prefix("lo")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn push_capped<T>(buf: &mut VecDeque<T>, v: T) {
@@ -233,7 +302,7 @@ pub fn render(name: &str, ctx: &mut Ctx) -> Option<Vec<InfoLine>> {
         },
         "network" => network_lines(ctx),
         "disk" => disk_lines(&ctx.disks),
-        "battery" => match platform::battery() {
+        "battery" => match ctx.battery() {
             Some(b) => vec![InfoLine::field("Battery", b)],
             None => vec![],
         },
@@ -264,6 +333,10 @@ pub fn render(name: &str, ctx: &mut Ctx) -> Option<Vec<InfoLine>> {
         },
         "localip" => match platform::local_ip() {
             Some(v) => vec![InfoLine::field("Local IP", v)],
+            None => vec![],
+        },
+        "localip6" => match platform::local_ip6() {
+            Some(v) => vec![InfoLine::field("Local IPv6", v)],
             None => vec![],
         },
         "theme" => match platform::theme() {

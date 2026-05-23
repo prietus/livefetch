@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub fn os() -> String {
     let name = run("sw_vers", &["-productName"]).unwrap_or_else(|| "macOS".into());
@@ -49,7 +50,7 @@ pub fn window_manager() -> Option<String> {
 }
 
 pub fn resolution() -> Option<String> {
-    let out = run("system_profiler", &["SPDisplaysDataType"])?;
+    let out = displays_data()?;
     // Lines look like "          Resolution: 3024 x 1964 Retina"
     let parts: Vec<String> = out
         .lines()
@@ -64,7 +65,7 @@ pub fn resolution() -> Option<String> {
 }
 
 pub fn gpus() -> Vec<String> {
-    let Some(out) = run("system_profiler", &["SPDisplaysDataType"]) else {
+    let Some(out) = displays_data() else {
         return Vec::new();
     };
     let mut gpus = Vec::new();
@@ -75,6 +76,15 @@ pub fn gpus() -> Vec<String> {
         }
     }
     gpus
+}
+
+/// `system_profiler SPDisplaysDataType` takes 1-3 seconds; both `resolution()`
+/// and `gpus()` need it, so cache the first invocation for the process lifetime.
+fn displays_data() -> Option<&'static str> {
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| run("system_profiler", &["SPDisplaysDataType"]))
+        .as_deref()
 }
 
 pub fn battery() -> Option<String> {
@@ -120,11 +130,7 @@ pub fn audio_server() -> Option<String> { Some("CoreAudio".into()) }
 pub fn session_type() -> Option<String> { Some("Aqua (Quartz)".into()) }
 
 pub fn local_ip() -> Option<String> {
-    let out = run("route", &["-n", "get", "default"])?;
-    let iface = out
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("interface:"))
-        .map(|s| s.trim().to_string())?;
+    let iface = default_iface("-inet")?;
     let addrs = run("ipconfig", &["getifaddr", &iface])?;
     let ip = addrs.trim();
     if ip.is_empty() {
@@ -132,6 +138,31 @@ pub fn local_ip() -> Option<String> {
     } else {
         Some(format!("{ip} ({iface})"))
     }
+}
+
+pub fn local_ip6() -> Option<String> {
+    let iface = default_iface("-inet6")?;
+    // `ipconfig` has no IPv6 equivalent of `getifaddr`, so parse `ifconfig`
+    // output and grab the first non-link-local inet6 entry.
+    let out = run("ifconfig", &[&iface])?;
+    for line in out.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("inet6 ") else { continue };
+        let addr = rest.split_whitespace().next()?;
+        let clean = addr.split('%').next().unwrap_or(addr);
+        if clean.to_lowercase().starts_with("fe80") {
+            continue;
+        }
+        return Some(format!("{clean} ({iface})"));
+    }
+    None
+}
+
+fn default_iface(family: &str) -> Option<String> {
+    let out = run("route", &["-n", "get", family, "default"])?;
+    out.lines()
+        .find_map(|l| l.trim().strip_prefix("interface:"))
+        .map(|s| s.trim().to_string())
 }
 
 pub fn theme() -> Option<String> {

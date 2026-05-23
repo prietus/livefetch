@@ -146,7 +146,8 @@ fn default_modules() -> Vec<String> {
     [
         "title", "separator", "os", "host", "kernel", "init", "uptime", "loadavg", "packages",
         "shell", "terminal", "session", "de", "wm", "resolution", "cpu", "cputemp", "gpu",
-        "gpudriver", "memory", "swap", "network", "disk", "localip", "audio", "theme", "battery",
+        "gpudriver", "memory", "swap", "network", "disk", "localip", "localip6", "audio", "theme",
+        "battery",
         "locale", "break", "colors",
     ]
     .iter()

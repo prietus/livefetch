@@ -35,8 +35,13 @@ pub struct Args {
     pub config: Option<PathBuf>,
 
     /// Override the module list, comma separated (e.g. os,kernel,cpu,memory).
+    /// Run with `--list-modules` to see every available name.
     #[arg(long, value_delimiter = ',')]
     pub modules: Option<Vec<String>>,
+
+    /// Print every available module with a short description and exit.
+    #[arg(long)]
+    pub list_modules: bool,
 
     /// Remove a solid background color from the image.
     /// Accepts: `none`, `auto` (sample image corners), `white`, `black`, or `#RRGGBB`.

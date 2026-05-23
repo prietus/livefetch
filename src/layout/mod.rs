@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -54,8 +53,7 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
     let mut renderer =
         image.map(|asset| renderers::build(proto, asset, (image_cols, image_rows), cell));
 
-    let stop = Arc::new(AtomicBool::new(false));
-    install_ctrl_c(stop.clone());
+    install_signal_handlers();
 
     let mut next_frame_at: Option<Instant> = None;
     let mut frame_idx = 0usize;
@@ -74,7 +72,7 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
         let mut next_info_at = Instant::now() + refresh;
 
         loop {
-            if stop.load(Ordering::Relaxed) {
+            if stop_requested() {
                 break;
             }
             let now = Instant::now();
@@ -100,7 +98,10 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
             stdout.flush()?;
 
             // Wake at the earlier of the two deadlines, capped at a 50ms
-            // heartbeat so the stop flag is checked often.
+            // heartbeat so the stop flag is checked often. std::thread::sleep
+            // retries on EINTR internally, so SIGINT/SIGTERM are not handled
+            // until the cap elapses — 50ms is fast enough that the user
+            // doesn't notice.
             let now = Instant::now();
             let next = match next_frame_at {
                 Some(f) => f.min(next_info_at),
@@ -109,7 +110,9 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
             let wait = next
                 .saturating_duration_since(now)
                 .min(Duration::from_millis(50));
-            sleep_interruptible(wait, &stop);
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
         }
     }
 
@@ -125,41 +128,23 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
     Ok(())
 }
 
-fn sleep_interruptible(d: Duration, stop: &AtomicBool) {
-    let end = Instant::now() + d;
-    while Instant::now() < end {
-        if stop.load(Ordering::Relaxed) {
-            return;
-        }
-        let chunk = (end - Instant::now()).min(Duration::from_millis(50));
-        std::thread::sleep(chunk);
-    }
+/// Shared flag flipped by the signal handler. AtomicBool ops are async-signal
+/// safe on every target we care about (lock-free relaxed store / load).
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn stop_requested() -> bool {
+    STOP_REQUESTED.load(Ordering::Relaxed)
 }
 
-fn install_ctrl_c(stop: Arc<AtomicBool>) {
+fn install_signal_handlers() {
     #[cfg(unix)]
-    {
-        static SIGNALED: AtomicBool = AtomicBool::new(false);
+    unsafe {
         extern "C" fn handler(_sig: libc::c_int) {
-            SIGNALED.store(true, Ordering::Relaxed);
+            STOP_REQUESTED.store(true, Ordering::Relaxed);
         }
-        unsafe {
-            libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
-        }
-        std::thread::spawn(move || loop {
-            if SIGNALED.load(Ordering::Relaxed) {
-                stop.store(true, Ordering::Relaxed);
-                return;
-            }
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(80));
-        });
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = stop;
+        let h = handler as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGINT, h);
+        libc::signal(libc::SIGTERM, h);
     }
 }
 

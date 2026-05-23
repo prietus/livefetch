@@ -15,4 +15,5 @@ pub fn gpu_drivers() -> Vec<String> { Vec::new() }
 pub fn audio_server() -> Option<String> { None }
 pub fn session_type() -> Option<String> { None }
 pub fn local_ip() -> Option<String> { None }
+pub fn local_ip6() -> Option<String> { None }
 pub fn theme() -> Option<String> { None }

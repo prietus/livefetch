@@ -456,34 +456,40 @@ pub fn session_type() -> Option<String> {
 }
 
 pub fn local_ip() -> Option<String> {
-    // `ip -4 route get 1.1.1.1` consults the routing table without DNS.
-    if let Some(out) = run("ip", &["-4", "route", "get", "1.1.1.1"]) {
-        let toks: Vec<&str> = out.split_whitespace().collect();
-        let mut ip: Option<&str> = None;
-        let mut iface: Option<&str> = None;
-        for w in toks.windows(2) {
-            match w[0] {
-                "src" if ip.is_none() => ip = Some(w[1]),
-                "dev" if iface.is_none() => iface = Some(w[1]),
-                _ => {}
-            }
-        }
-        if let Some(ip) = ip {
-            return Some(match iface {
-                Some(i) => format!("{ip} ({i})"),
-                None => ip.to_string(),
-            });
+    ip_route_get("-4", "1.1.1.1").or_else(|| {
+        // Fallback: first IPv4 from `hostname -I` (already excludes loopback).
+        run("hostname", &["-I"])
+            .and_then(|out| out.split_whitespace().next().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+    })
+}
+
+pub fn local_ip6() -> Option<String> {
+    // 2606:4700:4700::1111 = Cloudflare DNS; the lookup only consults the
+    // routing table, so no traffic is generated and no DNS hits the wire.
+    // The kernel's chosen source address is whatever is preferred for
+    // outbound — usually the GUA, or a privacy/temporary address if
+    // RFC 4941 is enabled (in which case this string changes daily).
+    ip_route_get("-6", "2606:4700:4700::1111")
+}
+
+fn ip_route_get(family: &str, dest: &str) -> Option<String> {
+    let out = run("ip", &[family, "route", "get", dest])?;
+    let toks: Vec<&str> = out.split_whitespace().collect();
+    let mut ip: Option<&str> = None;
+    let mut iface: Option<&str> = None;
+    for w in toks.windows(2) {
+        match w[0] {
+            "src" if ip.is_none() => ip = Some(w[1]),
+            "dev" if iface.is_none() => iface = Some(w[1]),
+            _ => {}
         }
     }
-    // Fallback: first non-loopback IPv4 from `hostname -I`.
-    if let Some(out) = run("hostname", &["-I"]) {
-        if let Some(ip) = out.split_whitespace().next() {
-            if !ip.is_empty() {
-                return Some(ip.to_string());
-            }
-        }
-    }
-    None
+    let ip = ip?;
+    Some(match iface {
+        Some(i) => format!("{ip} ({i})"),
+        None => ip.to_string(),
+    })
 }
 
 pub fn theme() -> Option<String> {

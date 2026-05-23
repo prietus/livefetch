@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::config::Config;
 
-pub use modules::{Ctx, InfoLine, LineKind};
+pub use modules::{Ctx, InfoLine, LineKind, ALL_MODULES};
 
 /// Owns the long-lived state needed to refresh and re-render the info column.
 ///
@@ -76,6 +76,7 @@ fn is_static(name: &str) -> bool {
             | "theme"
             | "session"
             | "localip"
+            | "localip6"
             | "colors"
             | "break"
     )

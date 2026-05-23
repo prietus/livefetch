@@ -119,6 +119,17 @@ Terminal protocols:
 
 `livefetch` defaults to a small live dashboard (CPU / RAM / network sparklines) next to an animated logo. If you want the snapshot behaviour for `.zshrc`, pass `--once`.
 
+## Releases
+
+Tag-driven via GitHub Actions. Pushing a tag matching `v*` builds release
+binaries for Linux x86_64, macOS x86_64 (Intel) and macOS aarch64 (Apple
+Silicon), and attaches them — plus SHA-256 checksums — to a GitHub Release.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## License
 
 [MIT](LICENSE)

@@ -10,6 +10,15 @@ use clap::Parser;
 
 fn main() -> Result<()> {
     let args = cli::Args::parse();
+
+    if args.list_modules {
+        let width = info::ALL_MODULES.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+        for (name, desc) in info::ALL_MODULES {
+            println!("  {name:width$}  {desc}");
+        }
+        return Ok(());
+    }
+
     let cfg = config::load(args.config.as_deref())?.merge_cli(&args);
 
     let image = match cfg.image_path.as_deref() {
