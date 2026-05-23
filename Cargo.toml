@@ -2,8 +2,14 @@
 name = "livefetch"
 version = "0.1.0"
 edition = "2021"
-description = "Animated fastfetch-style system info with gif/webp support"
+description = "Animated fastfetch-style system info with a live refreshing dashboard"
 license = "MIT"
+authors = ["Carlos Prieto <prietus@live.com>"]
+repository = "https://github.com/prietus/livefetch"
+homepage = "https://github.com/prietus/livefetch"
+readme = "README.md"
+keywords = ["fastfetch", "neofetch", "system-info", "terminal", "tui"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1"
