@@ -51,6 +51,68 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo -n "$MACOS_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$MACOS_KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | xargs)
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$MACOS_KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+          rm -f "$CERT_PATH"
+
+      - name: Codesign + notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/livefetch"
+
+          IDENTITY=$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" \
+            | grep 'Developer ID Application' \
+            | head -1 \
+            | awk -F'"' '{print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No Developer ID Application identity found in keychain"
+            exit 1
+          fi
+          echo "Signing with: $IDENTITY"
+
+          codesign --force --timestamp --options runtime \
+            --sign "$IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+          ZIP="$RUNNER_TEMP/livefetch-notarize.zip"
+          ditto -c -k --keepParent "$BIN" "$ZIP"
+
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+
       - name: Package
         shell: bash
         run: |
@@ -61,6 +123,10 @@ jobs:
           cp README.md LICENSE "$stage/"
           tar czf "${stage}.tar.gz" "$stage"
           shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+
+      - name: Clean up keychain (macOS)
+        if: runner.os == 'macOS' && always()
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
 
       - uses: actions/upload-artifact@v4
         with:
