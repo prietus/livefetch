@@ -9,6 +9,17 @@ A fastfetch-style system info tool, with two twists the others don't have:
 
 ## Install
 
+### Arch Linux (AUR)
+
+```sh
+yay -S livefetch-bin    # prebuilt binary from the latest GitHub release
+yay -S livefetch-git    # builds from master
+```
+
+(or `paru`, or any AUR helper of your choice)
+
+### From source
+
 ```sh
 cargo install --path .
 ```
@@ -122,8 +133,8 @@ Terminal protocols:
 ## Releases
 
 Tag-driven via GitHub Actions. Pushing a tag matching `v*` builds release
-binaries for Linux x86_64, macOS x86_64 (Intel) and macOS aarch64 (Apple
-Silicon), and attaches them — plus SHA-256 checksums — to a GitHub Release.
+binaries for Linux x86_64 and macOS aarch64 (Apple Silicon), and attaches
+them — plus SHA-256 checksums — to a GitHub Release.
 
 ```sh
 git tag v0.1.0
