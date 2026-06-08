@@ -7,9 +7,15 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::image::ImageAsset;
 use crate::info::{self, InfoLine, LineKind};
+use crate::logo::Logo;
 use crate::terminal::{self, cell_pixel_size, renderers, Protocol};
 
-pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()> {
+pub fn run(
+    cfg: Config,
+    image: Option<ImageAsset>,
+    ascii_logo: Option<&'static Logo>,
+    proto: Protocol,
+) -> Result<()> {
     let cell = cell_pixel_size();
 
     // Cache the static modules and take a first sysinfo sample so the initial
@@ -22,6 +28,8 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
 
     let image_cols = if image.is_some() && proto != Protocol::None {
         cfg.image_cols.min(cell.cols.saturating_sub(20))
+    } else if let Some(l) = ascii_logo {
+        l.width.min(cell.cols.saturating_sub(20))
     } else {
         0
     };
@@ -30,6 +38,8 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
 
     let image_rows = if let Some(asset) = &image {
         compute_image_rows(asset, image_cols, &cell, info_rows)
+    } else if let Some(l) = ascii_logo {
+        l.height()
     } else {
         0
     };
@@ -48,6 +58,11 @@ pub fn run(cfg: Config, image: Option<ImageAsset>, proto: Protocol) -> Result<()
     stdout.flush()?;
 
     paint_info(&mut stdout, &info_lines, info_col, info_rows)?;
+    if image.is_none() {
+        if let Some(logo) = ascii_logo {
+            paint_logo(&mut stdout, logo)?;
+        }
+    }
     stdout.flush()?;
 
     let mut renderer =
@@ -188,6 +203,21 @@ fn paint_info<W: Write>(
         if let Some(line) = lines.get(i as usize) {
             out.write_all(line.as_bytes())?;
         }
+    }
+    write!(out, "\x1b8")?;
+    Ok(())
+}
+
+/// Paint a static ASCII logo once at the saved anchor. Each line writes at
+/// column 0 of its row; the info column is positioned to the right of
+/// `image_cols + gutter`, so the two never collide. Static, so no redraws.
+fn paint_logo<W: Write>(out: &mut W, logo: &Logo) -> Result<()> {
+    for (i, line) in logo.lines.iter().enumerate() {
+        write!(out, "\x1b8")?;
+        if i > 0 {
+            write!(out, "\x1b[{}B", i)?;
+        }
+        out.write_all(line.as_bytes())?;
     }
     write!(out, "\x1b8")?;
     Ok(())

@@ -21,10 +21,10 @@ pub struct Args {
     #[arg(long)]
     pub no_animate: bool,
 
-    /// Snapshot mode: print info + first frame and exit (like fastfetch).
-    /// Without this flag, livefetch stays open and refreshes live metrics.
+    /// Live dashboard: stay open and refresh CPU / memory / swap / network metrics.
+    /// Without this flag, livefetch prints a snapshot and exits (like fastfetch).
     #[arg(long)]
-    pub once: bool,
+    pub live: bool,
 
     /// Refresh interval for live metrics, in milliseconds (default 500).
     #[arg(long, value_name = "MS")]
@@ -42,6 +42,16 @@ pub struct Args {
     /// Print every available module with a short description and exit.
     #[arg(long)]
     pub list_modules: bool,
+
+    /// ASCII distro logo to use when no `--image` is provided.
+    /// `auto` (default) detects from /etc/os-release, `none` disables the fallback.
+    /// Run `--list-logos` to see every built-in name.
+    #[arg(long, value_name = "NAME")]
+    pub logo: Option<String>,
+
+    /// Print every built-in ASCII logo name and exit.
+    #[arg(long)]
+    pub list_logos: bool,
 
     /// Remove a solid background color from the image.
     /// Accepts: `none`, `auto` (sample image corners), `white`, `black`, or `#RRGGBB`.

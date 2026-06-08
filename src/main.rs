@@ -3,6 +3,7 @@ mod config;
 mod image;
 mod info;
 mod layout;
+mod logo;
 mod terminal;
 
 use anyhow::Result;
@@ -19,6 +20,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.list_logos {
+        for l in logo::ALL {
+            println!("  {}", l.name);
+        }
+        return Ok(());
+    }
+
     let cfg = config::load(args.config.as_deref())?.merge_cli(&args);
 
     let image = match cfg.image_path.as_deref() {
@@ -30,6 +38,12 @@ fn main() -> Result<()> {
         None => None,
     };
 
+    let ascii_logo = if image.is_none() {
+        logo::lookup(&cfg.logo)
+    } else {
+        None
+    };
+
     let proto = terminal::detect_protocol(&cfg);
-    layout::run(cfg, image, proto)
+    layout::run(cfg, image, ascii_logo, proto)
 }

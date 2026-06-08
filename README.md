@@ -2,8 +2,8 @@
 
 A fastfetch-style system info tool, with two twists the others don't have:
 
-1. **Animated logos** — GIF / WebP / PNG / JPG, rendered with Kitty graphics, iTerm2 inline images, or a half-block ANSI fallback.
-2. **Live mode by default** — stays open and refreshes CPU / memory / swap / network every 500 ms, with Unicode sparklines and bars. Use `--once` for the classic snapshot behaviour.
+1. **Animated logos** — GIF / WebP / PNG / JPG, rendered with Kitty graphics, iTerm2 inline images, or a half-block ANSI fallback. Falls back to a built-in ASCII distro logo (auto-detected from `/etc/os-release`) when no image is given.
+2. **Optional live dashboard** — pass `--live` and it stays open, refreshing CPU / memory / swap / network every 500 ms with Unicode sparklines and bars. Without it, behaves like fastfetch: print and exit.
 
 ![livefetch](docs/demo.gif)
 
@@ -36,11 +36,11 @@ Requires a recent Rust toolchain (2021 edition).
 ## Usage
 
 ```sh
-# Live dashboard (default): refreshes metrics + animates the image until Ctrl-C
+# Snapshot mode (default): print info + first frame and exit (good for .zshrc)
 livefetch --image ~/Pictures/tux.gif
 
-# Snapshot mode: print info + first frame and exit (good for .zshrc)
-livefetch --image ~/Pictures/tux.gif --once
+# Live dashboard: refreshes metrics + animates the image until Ctrl-C
+livefetch --image ~/Pictures/tux.gif --live
 
 # Custom refresh interval
 livefetch --refresh 1000
@@ -53,6 +53,10 @@ livefetch --modules os,kernel,cpu,memory,network
 
 # List every available module
 livefetch --list-modules
+
+# Force a specific ASCII distro logo (auto-detected by default; `none` disables it)
+livefetch --logo arch
+livefetch --list-logos
 
 # Strip a solid background from the logo (handy for transparent-looking gifs)
 livefetch --image logo.gif --chroma auto
@@ -67,10 +71,12 @@ livefetch --image logo.gif --chroma '#ffffff' --chroma-tolerance 32
 | `--protocol <auto\|kitty\|iterm2\|ansi\|none>` | Force a specific image protocol. |
 | `--image-cols <N>` | Columns reserved for the image (default 34). |
 | `--no-animate` | Render only the first frame. |
-| `--once` | Snapshot mode — print and exit. |
+| `--live` | Live dashboard — stay open and refresh metrics until Ctrl-C. |
 | `--refresh <MS>` | Live metrics refresh interval, milliseconds (default 500, min 50). |
 | `--modules <a,b,c>` | Override the module list. |
 | `--list-modules` | Print every available module + description. |
+| `--logo <NAME>` | ASCII distro logo when no `--image` is given. `auto` (default), `none`, or any name from `--list-logos`. |
+| `--list-logos` | Print every built-in ASCII logo name. |
 | `--chroma <auto\|#RRGGBB\|none>` | Remove a solid background colour from the image. |
 | `--chroma-tolerance <0-255>` | Per-channel tolerance when matching the chroma colour. |
 | `--config <PATH>` | Path to a JSON config (default `~/.config/livefetch/config.json`). |
@@ -85,11 +91,12 @@ livefetch --image logo.gif --chroma '#ffffff' --chroma-tolerance 32
   "protocol": "auto",
   "image_cols": 34,
   "animate": true,
-  "live": true,
+  "live": false,
   "refresh_ms": 500,
   "modules": ["title", "separator", "os", "kernel", "cpu", "memory", "network", "colors"],
   "chroma": "auto",
-  "chroma_tolerance": 24
+  "chroma_tolerance": 24,
+  "logo": "auto"
 }
 ```
 
@@ -125,10 +132,10 @@ Terminal protocols:
 
 ## Why not fastfetch / neofetch?
 
-- They're snapshot-only — print and exit.
 - They don't animate logos.
+- They have no live mode.
 
-`livefetch` defaults to a small live dashboard (CPU / RAM / network sparklines) next to an animated logo. If you want the snapshot behaviour for `.zshrc`, pass `--once`.
+`livefetch` works as a drop-in replacement (print and exit, drop into your `.zshrc`), but pass `--live` and it turns into a small dashboard — CPU / RAM / network sparklines next to your animated logo — until you Ctrl-C.
 
 ## Releases
 
@@ -143,4 +150,6 @@ git push origin v0.1.0
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Bundled ASCII distro logos are adapted from
+[neofetch](https://github.com/dylanaraps/neofetch) (also MIT) — full notice in
+[THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES).

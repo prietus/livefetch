@@ -18,6 +18,7 @@ pub struct Config {
     pub modules: Vec<String>,
     pub chroma: ChromaKey,
     pub chroma_tolerance: u8,
+    pub logo: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +53,7 @@ struct FileConfig {
     modules: Option<Vec<String>>,
     chroma: Option<String>,
     chroma_tolerance: Option<u8>,
+    logo: Option<String>,
 }
 
 pub fn load(path: Option<&Path>) -> Result<Config> {
@@ -85,11 +87,12 @@ pub fn load(path: Option<&Path>) -> Result<Config> {
         protocol,
         image_cols: file_cfg.image_cols.unwrap_or(34),
         animate: file_cfg.animate.unwrap_or(true),
-        live: file_cfg.live.unwrap_or(true),
+        live: file_cfg.live.unwrap_or(false),
         refresh_ms: file_cfg.refresh_ms.unwrap_or(500).max(50),
         modules: file_cfg.modules.unwrap_or_else(default_modules),
         chroma,
         chroma_tolerance: file_cfg.chroma_tolerance.unwrap_or(24),
+        logo: file_cfg.logo.unwrap_or_else(|| "auto".to_string()),
     })
 }
 
@@ -107,8 +110,8 @@ impl Config {
         if args.no_animate {
             self.animate = false;
         }
-        if args.once {
-            self.live = false;
+        if args.live {
+            self.live = true;
         }
         if let Some(ms) = args.refresh {
             self.refresh_ms = ms.max(50);
@@ -123,6 +126,9 @@ impl Config {
         }
         if let Some(t) = args.chroma_tolerance {
             self.chroma_tolerance = t;
+        }
+        if let Some(l) = &args.logo {
+            self.logo = l.clone();
         }
         self
     }
